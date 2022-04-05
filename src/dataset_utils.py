@@ -168,7 +168,7 @@ def DataLoader(name):
         dataset = dataset_ContextualSBM(path, name=name)
     else:
         name = name.lower()
-    root_path = 'D:/tmp/'
+    root_path = '../data/'
     if name in ['cora', 'citeseer', 'pubmed']:
         # root_path = 'D:/tmp/'
         # path = osp.join(root_path, name)
