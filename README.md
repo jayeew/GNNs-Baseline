@@ -22,3 +22,13 @@ Downlaod by yourself, dataset_utils.py will help you.
 ```
 cora, citeseer, pubmed, computers, photo, chameleon, squirrel, film, texas, cornell, wisconsin
 ```
+
+## Run experiment with GCN & Cora:
+go to folder `src`
+```
+python train_model.py --RPMAX 2 \
+        --net GCN \
+        --train_rate 0.6 \
+        --val_rate 0.2 \
+        --dataset cora 
+```
