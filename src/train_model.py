@@ -22,7 +22,7 @@ import numpy as np
 
 
 def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
-    data = dataset[0]
+    data = dataset[0]# 刷新数据，否则edge_index被修改成稀疏张量，H2GCN不能多轮运行
     def train(model, optimizer, data, dprate):
         model.train()
         optimizer.zero_grad()
@@ -54,7 +54,7 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
     permute_masks = random_planetoid_splits
     data = permute_masks(data, dataset.num_classes, percls_trn, val_lb)# 得到train_mask, test_mask, val_mask
 
-    if args.net == 'H2GCN':
+    if args.net == 'H2GCN':# 强制改edge_index为稀疏张量表示
         # print(data)
         adj = to_sparse_tensor(data)
         data.edge_index = adj
