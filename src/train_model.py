@@ -31,7 +31,7 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
         loss = nll
         loss.backward()
 
-        optimizer.step()
+        optimizer.step() 
         del out
 
     def test(model, data):
