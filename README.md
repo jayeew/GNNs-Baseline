@@ -18,6 +18,7 @@ H2GCN FAGCN APPNP GCN GAT ChebNet APPNP JKNet GPRGNN
 ```
 
 ## Datasets supported
+Downlaod by yourself, dataset_utils.py will help you.
 ```
 cora, citeseer, pubmed, computers, photo, chameleon, squirrel, film, texas, cornell, wisconsin
 ```
