@@ -1,0 +1,23 @@
+epochs: 1000
+lr: 0.05
+weight_decay: 0.0005
+early_stopping: 200
+hidden: 64
+dropout: 0.5
+train_rate: 0.6
+val_rate: 0.2
+K: 10
+alpha: 1.0
+epsilon: 0.1
+dprate: 0.5
+C: 5
+Init: PPR
+Gamma: None
+ppnp: GPR_prop
+heads: 8
+output_heads: 1
+dataset: texas
+cuda: 0
+RPMAX: 100
+net: FAGCN
+Test acc = 77.5082 ¡À 1.1954 	 val acc mean = 78.7297
