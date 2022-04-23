@@ -4,16 +4,19 @@
 
 import torch
 import torch.nn.functional as F
-import numpy as np
 import torch_sparse
 
 from torch import FloatTensor
+from torch import nn
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch.nn import Parameter
 from torch.nn import Linear
-from torch_geometric.nn import GATConv, GCNConv, ChebConv, FAConv
+from torch_geometric.nn.dense.linear import Linear
+from torch_geometric.nn import GATConv, GCNConv, ChebConv, FAConv, APPNP
 from torch_geometric.nn import JumpingKnowledge
-from torch_geometric.nn import MessagePassing, APPNP
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import remove_self_loops, add_self_loops, softmax, to_dense_adj, dense_to_sparse
+from torch_geometric.nn.inits import glorot, zeros
 
 
 class GPR_prop(MessagePassing):
@@ -75,12 +78,11 @@ class GPR_prop(MessagePassing):
         return '{}(K={}, temp={})'.format(self.__class__.__name__, self.K,
                                           self.temp)
 
-
 class GPRGNN(torch.nn.Module):
     def __init__(self, dataset, args):
         super(GPRGNN, self).__init__()
-        self.lin1 = Linear(dataset.num_features, args.hidden)
-        self.lin2 = Linear(args.hidden, dataset.num_classes)
+        self.lin1 = nn.Linear(dataset.num_features, args.hidden)
+        self.lin2 = nn.Linear(args.hidden, dataset.num_classes)
 
         if args.ppnp == 'PPNP':
             self.prop1 = APPNP(args.K, args.alpha)
@@ -110,7 +112,6 @@ class GPRGNN(torch.nn.Module):
             x = self.prop1(x, edge_index)
             return F.log_softmax(x, dim=1)
 
-
 class GCN_Net(torch.nn.Module):
     def __init__(self, dataset, args):
         super(GCN_Net, self).__init__()
@@ -129,7 +130,6 @@ class GCN_Net(torch.nn.Module):
         x = self.conv2(x, edge_index)
         return F.log_softmax(x, dim=1)
 
-
 class ChebNet(torch.nn.Module):
     def __init__(self, dataset, args):
         super(ChebNet, self).__init__()
@@ -147,7 +147,6 @@ class ChebNet(torch.nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.conv2(x, edge_index)
         return F.log_softmax(x, dim=1)
-
 
 class GAT_Net(torch.nn.Module):
     def __init__(self, dataset, args):
@@ -177,12 +176,167 @@ class GAT_Net(torch.nn.Module):
         x = self.conv2(x, edge_index)
         return F.log_softmax(x, dim=1)
 
+class GAT_prop(MessagePassing):
+    '''
+    out : 原始GAT，仅考虑1阶
+    out2: 仅考虑2阶的注意力
+    out3: 1阶 拼 2接 的注意力
+    '''
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        heads = 1,
+        concat = True,
+        negative_slope = 0.2,
+        dropout = 0.0,
+        add_self_loops = True,
+        bias = True,
+        **kwargs
+    ):
+        super(GAT_prop, self).__init__(aggr='add', node_dim=0, **kwargs)
+        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.heads = heads
+        self.concat = concat
+        self.negative_slope = negative_slope
+        self.dropout = dropout
+        self.add_self_loops = add_self_loops
+        # self.bias = bias
+
+        self.lin_src = Linear(in_channels, heads*out_channels,
+                            bias=False, weight_initializer='glorot')
+        self.lin_dst = Linear(in_channels, heads*out_channels,
+                            bias=False, weight_initializer='glorot')
+        self.lin_dst2 = Linear(in_channels, heads*out_channels,
+                            bias=False, weight_initializer='glorot')
+        # self.lin_dst = Linear(in_channels, heads*out_channels,
+        #                     bias=False, weight_initializer='glorot')
+
+        # The learnable parameters to compute attention coefficients:   
+        self.att_src = Parameter(torch.Tensor(1, heads, out_channels))
+        self.att_dst = Parameter(torch.Tensor(1, heads, out_channels))
+        self.att_dst2 = Parameter(torch.Tensor(1, heads, out_channels))
+
+        # self.lin_edge = None
+        # self.register_parameter('att_edge', None)
+            
+        if bias and concat:
+            self.bias = Parameter(torch.Tensor(heads * out_channels))
+        elif bias and not concat:
+            self.bias = Parameter(torch.Tensor(out_channels))
+        else:
+            self.register_parameter('bias', None)
+            
+        # self._alpha = None
+        
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        self.lin_src.reset_parameters()
+        self.lin_dst.reset_parameters()
+        self.lin_dst2.reset_parameters()
+
+        glorot(self.att_src)
+        glorot(self.att_dst)
+        glorot(self.att_dst2)
+        # glorot(self.att_edge)
+        zeros(self.bias)
+        
+    def forward(self, x, edge_index, size=None):
+        H, C = self.heads, self.out_channels
+
+        x_src = self.lin_src(x).view(-1, H, C) # N*H*C
+        x_dst = self.lin_dst(x).view(-1, H, C)
+        x_dst2 = self.lin_dst2(x).view(-1, H, C)
+
+        x = (x_src, x_dst)
+        
+        
+        alpha_src = (x_src * self.att_src).sum(dim=-1) # ? N*H
+        alpha_dst = (x_dst * self.att_dst).sum(dim=-1)
+        alpha_dst2 = (x_dst2 * self.att_dst2).sum(dim=-1)
+
+        alpha = (alpha_src, alpha_dst)
+        
+        if self.add_self_loops:
+            num_nodes = x_src.size(0)
+            edge_index, _ = remove_self_loops(edge_index)
+            edge_index, _ = add_self_loops(edge_index, num_nodes=num_nodes)
+
+        out = self.propagate(edge_index, x=x, alpha=alpha, size=size) # N*H*C
+        
+        adj = to_dense_adj(edge_index=edge_index).squeeze(0)
+        adj = torch.spmm(adj, adj)
+        edge_index = dense_to_sparse(adj)[0]
+        x = (x_src, x_dst2)
+        alpha = (alpha_src, alpha_dst2)
+        out2 = self.propagate(edge_index, x=x, alpha=alpha, size=size)
+        
+
+        if self.concat:
+            out = out.view(-1, self.heads * self.out_channels) # N*(H*C)
+            out2 = out2.view(-1, self.heads * self.out_channels)
+        
+        else:
+            out = out.mean(1)
+            out2 = out2.mean(1)
+            
+        # if self.bias is not None:
+        #     out += self.bias
+        # print('out {}, out2 {}, out3 {}'.format(out.size(), out2.size(), out3.size()))    
+        out3 = torch.cat((out, out2), dim=-1)
+        return out3
+        
+    def message(self, x_j, alpha_j, alpha_i,
+                index, ptr, size_i):
+        # x_j: E*H*C
+        # print('index {}, ptr {}, size_i {}'.format(index.size(), ptr, size_i))
+        alpha = alpha_i + alpha_j # E*H
+        # print('alpha1 size {}'.format(alpha.size()))
+        alpha = F.leaky_relu(alpha, self.negative_slope)
+        alpha = softmax(alpha, index, ptr, size_i) # E*H
+        # print('alpha2 size {}'.format(alpha.size()))
+
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training).unsqueeze(-1) #E*H*1
+        # print('alpha3 size {}'.format(alpha.size()))
+        # print('x_j {}'.format(x_j.size()))
+        return x_j * alpha
+
+class GAT_Net2(torch.nn.Module):
+    def __init__(self, dataset, args):
+        super(GAT_Net2, self).__init__()
+        self.conv1 = GAT_prop(
+            dataset.num_features,
+            args.hidden,
+            heads=args.heads,
+            dropout=args.dropout)
+        self.conv2 = GAT_prop(
+            args.hidden * args.heads * 2, # args.hidden * args.heads * 2 when use out3
+            dataset.num_classes,
+            heads=args.output_heads,
+            concat=False,
+            dropout=args.dropout)
+        self.dropout = args.dropout
+
+    def reset_parameters(self):
+        self.conv1.reset_parameters()
+        self.conv2.reset_parameters()
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = F.elu(self.conv1(x, edge_index))
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.conv2(x, edge_index)
+        return F.log_softmax(x, dim=1)
 
 class APPNP_Net(torch.nn.Module):
     def __init__(self, dataset, args):
         super(APPNP_Net, self).__init__()
-        self.lin1 = Linear(dataset.num_features, args.hidden)
-        self.lin2 = Linear(args.hidden, dataset.num_classes)
+        self.lin1 = nn.Linear(dataset.num_features, args.hidden)
+        self.lin2 = nn.Linear(args.hidden, dataset.num_classes)
         self.prop1 = APPNP(args.K, args.alpha)
         self.dropout = args.dropout
 
@@ -198,7 +352,6 @@ class APPNP_Net(torch.nn.Module):
         x = self.lin2(x)
         x = self.prop1(x, edge_index)
         return F.log_softmax(x, dim=1)
-
 
 class GCN_JKNet(torch.nn.Module):
     def __init__(self, dataset, args):

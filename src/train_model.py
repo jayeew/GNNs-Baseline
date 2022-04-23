@@ -8,7 +8,6 @@
 """
 
 import argparse
-from ast import arg
 from dataset_utils import DataLoader
 from utils import random_planetoid_splits, to_sparse_tensor
 from GNN_models import *
@@ -17,48 +16,49 @@ import os
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau, StepLR
 
 import numpy as np
 
+def train(model, optimizer, data, dprate):
+    model.train()
+    optimizer.zero_grad()
+    out = model(data)
+    nll = F.nll_loss(out[data.train_mask], data.y[data.train_mask])# Negative Log Likelihood Loss，softmax+log+nll_loss = CrossEntropyLoss
+    loss = nll
+    loss.backward()
+
+    optimizer.step()
+    del out
+
+def test(model, data):
+    model.eval()
+    logits, accs, losses, preds = model(data), [], [], []
+    for _, mask in data('train_mask', 'val_mask', 'test_mask'):
+        pred = logits[mask].argmax(dim=1)
+        acc = pred.eq(data.y[mask]).sum().item() / mask.sum().item()
+
+        loss = F.nll_loss(model(data)[mask], data.y[mask])
+
+        preds.append(pred.detach().cpu())#阻断反向传播，数据迁移至cpu
+        accs.append(acc)
+        losses.append(loss.detach().cpu())
+    return accs, preds, losses
 
 def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
-    data = dataset[0]# 刷新数据，否则edge_index被修改成稀疏张量，H2GCN不能多轮运行
-    def train(model, optimizer, data, dprate):
-        model.train()
-        optimizer.zero_grad()
-        out = model(data)
-        nll = F.nll_loss(out[data.train_mask], data.y[data.train_mask])# Negative Log Likelihood Loss，softmax+log+nll_loss = CrossEntropyLoss
-        loss = nll
-        loss.backward()
-
-        optimizer.step() 
-        del out
-
-    def test(model, data):
-        model.eval()
-        logits, accs, losses, preds = model(data), [], [], []
-        for _, mask in data('train_mask', 'val_mask', 'test_mask'):
-            pred = logits[mask].argmax(dim=1)
-            acc = pred.eq(data.y[mask]).sum().item() / mask.sum().item()
-
-            loss = F.nll_loss(model(data)[mask], data.y[mask])
-
-            preds.append(pred.detach().cpu())#阻断反向传播，数据迁移至cpu
-            accs.append(acc)
-            losses.append(loss.detach().cpu())
-        return accs, preds, losses
+    # data = dataset[0]# 刷新数据，否则edge_index被修改成稀疏张量，H2GCN不能多轮运行
 
     appnp_net = Net(dataset, args)#初始化网络模型，包含数据集特征数、类别数，模型超参
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     permute_masks = random_planetoid_splits
-    data = permute_masks(data, dataset.num_classes, percls_trn, val_lb)# 得到train_mask, test_mask, val_mask
+    data = permute_masks(data, dataset.num_classes, percls_trn, val_lb)#得到train_mask, test_mask, val_mask
 
-    if args.net == 'H2GCN':# 强制改edge_index为稀疏张量表示
+    if args.net == 'H2GCN': # 强制改edge_index为torch.sparse.FloatTensor
         # print(data)
         adj = to_sparse_tensor(data)
         data.edge_index = adj
-    
+
     model, data = appnp_net.to(device), data.to(device)
 
     if args.net in ['APPNP', 'GPRGNN']:
@@ -81,6 +81,8 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
                                      lr=args.lr,
                                      weight_decay=args.weight_decay)
 
+    # scheduler = StepLR(optimizer, step_size=10, gamma=0.2, verbose=True)
+    # scheduler = ReduceLROnPlateau(optimizer, mode = 'max', factor=0.2, patience=10, cooldown=5, eps=1e-10, verbose=True)
     best_val_acc = test_acc = 0
     best_val_loss = float('inf')
     val_loss_history = []
@@ -88,11 +90,11 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
 
     # str = args.net + '_' + args.dataset + '_{}'.format(RP)
     # writer = SummaryWriter(os.path.abspath('..') + '/tensorboard/' + str)
-
     for epoch in range(args.epochs):
         train(model, optimizer, data, args.dprate)
-
+        
         [train_acc, val_acc, tmp_test_acc], preds, [train_loss, val_loss, tmp_test_loss] = test(model, data)
+        # scheduler.step(val_acc)
 
         if val_loss < best_val_loss:#根据验证集评估模型
             best_val_acc = val_acc
@@ -140,7 +142,7 @@ if __name__ == '__main__':
     parser.add_argument('--Init', type=str,
                         choices=['SGC', 'PPR', 'NPPR', 'Random', 'WS', 'Null'],
                         default='PPR')
-    parser.add_argument('--Gamma', default=None) # GPRGCN
+    parser.add_argument('--Gamma', default=None)
     parser.add_argument('--ppnp', default='GPR_prop',
                         choices=['PPNP', 'GPR_prop'])
     parser.add_argument('--heads', default=8, type=int)
@@ -149,7 +151,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', default='Cora')
     parser.add_argument('--cuda', type=int, default=0)
     parser.add_argument('--RPMAX', type=int, default=10)
-    parser.add_argument('--net', type=str, choices=['GCN', 'GAT', 'APPNP', 'ChebNet', 'JKNet', 'GPRGNN', 'FAGCN', 'H2GCN'],
+    parser.add_argument('--net', type=str, choices=['GCN', 'GAT', 'GAT2', 'APPNP', 'ChebNet', 'JKNet', 'GPRGNN', 'FAGCN', 'H2GCN'],
                         default='GPRGNN')
 
     args = parser.parse_args()
@@ -159,6 +161,8 @@ if __name__ == '__main__':
         Net = GCN_Net
     elif gnn_name == 'GAT':
         Net = GAT_Net
+    elif gnn_name == 'GAT2':
+        Net = GAT_Net2
     elif gnn_name == 'APPNP':
         Net = APPNP_Net
     elif gnn_name == 'ChebNet':
@@ -204,7 +208,7 @@ if __name__ == '__main__':
     # print(f'test acc mean = {test_acc_mean:.4f} \t test acc std = {test_acc_std:.4f} \t val acc mean = {val_acc_mean:.4f}')
     print(f'Test acc = {test_acc_mean:.4f} ± {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}')
 
-    # save experiments
+    # save experiments parameters and results
     from datetime import datetime
     save_file_name = '{}_{}_{}.txt'.format(args.net, args.dataset, datetime.today().date())
     print('experiments results have been saved in : results/{}.'.format(save_file_name))
@@ -212,4 +216,4 @@ if __name__ == '__main__':
     print('{}{}{}'.format('*'*20, datetime.today(), '*'*20), file=file)
     for k in args.__dict__:
         print(k + ": " + str(args.__dict__[k]), file=file)
-    print(f'Test acc = {test_acc_mean:.4f} ± {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}', file=file)
+    print(f'Test acc = {test_acc_mean:.4f} +- {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}', file=file)
