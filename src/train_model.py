@@ -46,7 +46,6 @@ def test(model, data):
     return accs, preds, losses
 
 def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
-    # data = dataset[0]# 刷新数据，否则edge_index被修改成稀疏张量，H2GCN不能多轮运行
 
     appnp_net = Net(dataset, args)#初始化网络模型，包含数据集特征数、类别数，模型超参
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -122,7 +121,6 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
 
     return test_acc, best_val_acc, Gamma_0
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=1000)
@@ -197,7 +195,7 @@ if __name__ == '__main__':
     Results0 = []
 
     for RP in tqdm(range(RPMAX)):#重复训练RPMAX次，每次有args.epochs轮
-
+        dataset, data = DataLoader(dname)# H2GCN更改了edge_index，重新获取
         test_acc, best_val_acc, Gamma_0 = RunExp(args, dataset, data, Net, percls_trn, val_lb, RP)
         Results0.append([test_acc, best_val_acc, Gamma_0])
 
