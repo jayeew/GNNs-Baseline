@@ -33,4 +33,4 @@ python train_model.py --RPMAX 2 \
         --dataset cora 
 ```
 ## Visualization of Confusion Matrix
-![](https://github.com/jiayiwang5/Chinese-ChatBot/blob/master/image/image.png)
+![](https://github.com/jayeew/GNNs-Baseline/blob/main/pics/H2GCN_chamelon.png)
