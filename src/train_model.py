@@ -8,6 +8,7 @@
 """
 
 import argparse
+from ast import arg
 from dataset_utils import DataLoader
 from utils import random_planetoid_splits, to_sparse_tensor
 from GNN_models import *
@@ -16,9 +17,10 @@ import os
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau, StepLR
-
 import numpy as np
+
+from ray import tune
+from ray.tune.schedulers import ASHAScheduler
 
 def train(model, optimizer, data, dprate):
     model.train()
@@ -45,19 +47,53 @@ def test(model, data):
         losses.append(loss.detach().cpu())
     return accs, preds, losses
 
+def plot_confusion_matrix(model, dataset, data, net):
+    model.eval()
+    num_classes = dataset.num_classes
+    conma = np.zeros((num_classes, num_classes))
+    predict = model(data)[data.test_mask].argmax(dim=1).detach().cpu().numpy()
+    truth = data.y[data.test_mask].detach().cpu().numpy()
+    for _ in range(predict.shape[0]):
+        conma[predict[_]][truth[_]] += 1
+    print(conma)
+
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    # 绘图
+    fig = plt.figure()
+    ax = fig.gca(projection='3d')
+    X = np.arange(0, num_classes, step=1)
+    Y = np.arange(0, num_classes, step=1)
+
+    xx, yy = np.meshgrid(X, Y)  
+    X, Y = xx.ravel(), yy.ravel() 
+    bottom = np.zeros_like(X) 
+    conma = conma.T.ravel()
+    width = height = 0.3 
+
+    c = ['r']*(num_classes**2)
+
+    ax.bar3d(X, Y, bottom, height, width, conma,  color=c, shade=True)
+    ax.set_title('Confusion Matrix : {} on {}'.format(net, dataset.name))
+    ax.set_xlabel('predict')
+    ax.set_ylabel('truth')
+    ax.set_zlabel('num')
+    plt.show()
+
 def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
+    # data = dataset[0]# 刷新数据，否则edge_index被修改成稀疏张量，H2GCN不能多轮运行
 
     appnp_net = Net(dataset, args)#初始化网络模型，包含数据集特征数、类别数，模型超参
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     permute_masks = random_planetoid_splits
-    data = permute_masks(data, dataset.num_classes, percls_trn, val_lb)#得到train_mask, test_mask, val_mask
+    data = permute_masks(data, dataset.num_classes, percls_trn, val_lb)# 得到train_mask, test_mask, val_mask
 
-    if args.net == 'H2GCN': # 强制改edge_index为torch.sparse.FloatTensor
+    if args.net == 'H2GCN':# 强制改edge_index为稀疏张量表示
         # print(data)
         adj = to_sparse_tensor(data)
         data.edge_index = adj
-
+    
     model, data = appnp_net.to(device), data.to(device)
 
     if args.net in ['APPNP', 'GPRGNN']:
@@ -80,8 +116,6 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
                                      lr=args.lr,
                                      weight_decay=args.weight_decay)
 
-    # scheduler = StepLR(optimizer, step_size=10, gamma=0.2, verbose=True)
-    # scheduler = ReduceLROnPlateau(optimizer, mode = 'max', factor=0.2, patience=10, cooldown=5, eps=1e-10, verbose=True)
     best_val_acc = test_acc = 0
     best_val_loss = float('inf')
     val_loss_history = []
@@ -89,11 +123,11 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
 
     # str = args.net + '_' + args.dataset + '_{}'.format(RP)
     # writer = SummaryWriter(os.path.abspath('..') + '/tensorboard/' + str)
+
     for epoch in range(args.epochs):
         train(model, optimizer, data, args.dprate)
-        
+
         [train_acc, val_acc, tmp_test_acc], preds, [train_loss, val_loss, tmp_test_loss] = test(model, data)
-        # scheduler.step(val_acc)
 
         if val_loss < best_val_loss:#根据验证集评估模型
             best_val_acc = val_acc
@@ -118,8 +152,9 @@ def RunExp(args, dataset, data, Net, percls_trn, val_lb, RP):
                 if val_loss > tmp.mean().item():
                     break #如果超过early_stopping部分的平均验证损失小于当前的验证损失，说明模型不再提高
 
-
+    # plot_confusion_matrix(model, dataset, data, args.net)                
     return test_acc, best_val_acc, Gamma_0
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -140,7 +175,7 @@ if __name__ == '__main__':
     parser.add_argument('--Init', type=str,
                         choices=['SGC', 'PPR', 'NPPR', 'Random', 'WS', 'Null'],
                         default='PPR')
-    parser.add_argument('--Gamma', default=None)
+    parser.add_argument('--Gamma', default=None) # GPRGCN
     parser.add_argument('--ppnp', default='GPR_prop',
                         choices=['PPNP', 'GPR_prop'])
     parser.add_argument('--heads', default=8, type=int)
@@ -149,7 +184,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', default='Cora')
     parser.add_argument('--cuda', type=int, default=0)
     parser.add_argument('--RPMAX', type=int, default=10)
-    parser.add_argument('--net', type=str, choices=['GCN', 'GAT', 'GAT2', 'APPNP', 'ChebNet', 'JKNet', 'GPRGNN', 'FAGCN', 'H2GCN'],
+    parser.add_argument('--net', type=str, choices=['GCN', 'GAT', 'APPNP', 'ChebNet', 'JKNet', 'GPRGNN', 'FAGCN', 'H2GCN'],
                         default='GPRGNN')
 
     args = parser.parse_args()
@@ -159,8 +194,6 @@ if __name__ == '__main__':
         Net = GCN_Net
     elif gnn_name == 'GAT':
         Net = GAT_Net
-    elif gnn_name == 'GAT2':
-        Net = GAT_Net2
     elif gnn_name == 'APPNP':
         Net = APPNP_Net
     elif gnn_name == 'ChebNet':
@@ -195,7 +228,7 @@ if __name__ == '__main__':
     Results0 = []
 
     for RP in tqdm(range(RPMAX)):#重复训练RPMAX次，每次有args.epochs轮
-        dataset, data = DataLoader(dname)# H2GCN更改了edge_index，重新获取
+
         test_acc, best_val_acc, Gamma_0 = RunExp(args, dataset, data, Net, percls_trn, val_lb, RP)
         Results0.append([test_acc, best_val_acc, Gamma_0])
 
@@ -204,9 +237,9 @@ if __name__ == '__main__':
     confidence_interval = 1.96 * test_acc_std/np.sqrt(RPMAX) # 0.95置信区间
     print(f'{gnn_name} on dataset {args.dataset}, in {RPMAX} repeated experiment:')
     # print(f'test acc mean = {test_acc_mean:.4f} \t test acc std = {test_acc_std:.4f} \t val acc mean = {val_acc_mean:.4f}')
-    print(f'Test acc = {test_acc_mean:.4f} ± {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}')
+    print(f'Test acc mean= {test_acc_mean:.4f} ± {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}')
 
-    # save experiments parameters and results
+    # save experiments
     from datetime import datetime
     save_file_name = '{}_{}_{}.txt'.format(args.net, args.dataset, datetime.today().date())
     print('experiments results have been saved in : results/{}.'.format(save_file_name))
@@ -214,4 +247,4 @@ if __name__ == '__main__':
     print('{}{}{}'.format('*'*20, datetime.today(), '*'*20), file=file)
     for k in args.__dict__:
         print(k + ": " + str(args.__dict__[k]), file=file)
-    print(f'Test acc = {test_acc_mean:.4f} +- {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}', file=file)
+    print(f'Test acc mean= {test_acc_mean:.4f} ± {confidence_interval:.4f} \t val acc mean = {val_acc_mean:.4f}', file=file)
