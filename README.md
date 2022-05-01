@@ -32,3 +32,5 @@ python train_model.py --RPMAX 2 \
         --val_rate 0.2 \
         --dataset cora 
 ```
+## Visualization of Confusion Matrix
+![](https://github.com/jiayiwang5/Chinese-ChatBot/blob/master/image/image.png)
