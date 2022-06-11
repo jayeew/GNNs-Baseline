@@ -18,7 +18,7 @@ H2GCN FAGCN APPNP GCN GAT ChebNet APPNP JKNet GPRGNN
 ```
 
 ## Unsupervised models supported
-Network Embedding as Matrix Factorization
+["Network Embedding as Matrix Factorization: Unifying DeepWalk, LINE, PTE, and node2vec"](https://github.com/xptree/NetMF)
 ```
 DeepWalk Line NetMF
 ```
@@ -32,10 +32,10 @@ cora, citeseer, pubmed, computers, photo, chameleon, squirrel, film, texas, corn
 ## Run experiment with GCN & Cora:
 go to folder `src`
 ```
-python train_model.py --RPMAX 2 \
+python train_model.py --RPMAX 1 \
         --net GCN \
-        --train_rate 0.6 \
-        --val_rate 0.2 \
+        --train_rate 0.05 \
+        --val_rate 0.05 \
         --dataset cora 
 ```
 ## Visualization of Confusion Matrix
