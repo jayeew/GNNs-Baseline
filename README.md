@@ -17,6 +17,12 @@ torch-sparse
 H2GCN FAGCN APPNP GCN GAT ChebNet APPNP JKNet GPRGNN
 ```
 
+## Unsupervised models supported
+Network Embedding as Matrix Factorization
+```
+DeepWalk Line NetMF
+```
+
 ## Datasets supported
 Downlaod by yourself, dataset_utils.py will help you.
 ```
